@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.retrieval.vector_search import vector_search
+from app.retrieval.hybrid import hybrid_search
 
 router = APIRouter(prefix="/search", tags=["Search"])
 
@@ -19,6 +20,22 @@ async def semantic_search(
     db: AsyncSession = Depends(get_db),
 ):
     results = await vector_search(
+        db=db,
+        query=request.query,
+        top_k=request.top_k,
+    )
+
+    return {
+        "query": request.query,
+        "results": results,
+    }
+
+@router.post("/hybrid")
+async def hybrid_semantic_search(
+    request: SearchRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    results = await hybrid_search(
         db=db,
         query=request.query,
         top_k=request.top_k,
