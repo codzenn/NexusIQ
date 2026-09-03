@@ -26,7 +26,17 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @property
+    def alembic_database_url(self) -> str:
+        return self.database_url.replace(
+            "postgresql+asyncpg://",
+            "postgresql+psycopg://",
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
+
+settings = get_settings()
