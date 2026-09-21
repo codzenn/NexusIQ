@@ -1,8 +1,10 @@
 from app.core.config import get_settings
 from app.core.database import Base
 
+from app.models.conversation import Conversation
 from app.models.document import Document
 from app.models.document_chunk import DocumentChunk
+from app.models.message import Message
 
 from logging.config import fileConfig
 

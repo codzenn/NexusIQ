@@ -87,14 +87,66 @@ Evidence:
     return _extract_text(response.content)
 
 
+async def rewrite_query(
+    query: str,
+    history: list[dict],
+) -> str:
+    """
+    Convert a conversational follow-up into a standalone
+    retrieval query.
+    """
+
+    if not history:
+        return query
+
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in history
+    )
+
+    prompt = f"""
+Rewrite the user's latest question into a standalone search query.
+
+Use the conversation history only to resolve references
+such as "it", "that", "they", "the previous one", etc.
+
+Rules:
+- Preserve the user's actual intent.
+- Do not answer the question.
+- Do not add unsupported information.
+- Return ONLY the rewritten query.
+- Keep it concise.
+
+Conversation history:
+{history_text}
+
+Latest user question:
+{query}
+"""
+
+    response = await llm.ainvoke(prompt)
+
+    return _extract_text(response.content).strip()
+
+
 async def generate_rag_answer(
     db,
     query: str,
     top_k: int = 5,
+    history: list[dict] | None = None,
 ) -> dict:
+    history = history or []
+
+    # Rewrite follow-up questions into standalone retrieval queries.
+    retrieval_query = await rewrite_query(
+        query=query,
+        history=history,
+    )
+
+    # Retrieve evidence using the rewritten query.
     results = await hybrid_search(
         db=db,
-        query=query,
+        query=retrieval_query,
         top_k=top_k,
     )
 
@@ -106,6 +158,7 @@ async def generate_rag_answer(
             ),
             "citations": [],
             "sources": [],
+            "retrieval_query": retrieval_query,
             "evidence_grade": {
                 "is_sufficient": False,
                 "score": 0.0,
@@ -118,14 +171,14 @@ async def generate_rag_answer(
             },
         }
 
-    # Grade whether the retrieved evidence is actually
-    # sufficient to answer the user's question.
+    # Check whether the retrieved evidence is sufficient
+    # to answer the user's actual question.
     evidence_grade = await grade_evidence(
         query=query,
         results=results,
     )
 
-    # Do not generate an answer when the evidence is insufficient.
+    # Stop before generation if evidence is insufficient.
     if not evidence_grade["is_sufficient"]:
         return {
             "answer": (
@@ -143,6 +196,7 @@ async def generate_rag_answer(
                 }
                 for result in results
             ],
+            "retrieval_query": retrieval_query,
             "evidence_grade": evidence_grade,
             "citation_validation": {
                 "is_valid": True,
@@ -153,21 +207,32 @@ async def generate_rag_answer(
 
     context = build_context(results)
 
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in history
+    )
+
     prompt = f"""
 You are NexusIQ, an enterprise knowledge assistant.
 
-Answer the user's question using ONLY the provided evidence.
+Answer the user's latest question using ONLY the provided evidence.
+
+Conversation history:
+{history_text if history_text else "No previous conversation."}
 
 Rules:
 - Do not invent facts.
 - Do not use outside knowledge.
+- Use the conversation history only to understand references
+  and conversational context.
+- Factual answers must come from the provided evidence.
 - Every important factual statement must have a citation.
 - Use citation numbers exactly as provided: [1], [2], [3], etc.
 - Never create a citation number that does not exist.
 - If the evidence is insufficient, say so clearly.
 - Keep the answer concise but useful.
 
-User question:
+User's latest question:
 {query}
 
 Evidence:
@@ -178,12 +243,13 @@ Evidence:
 
     answer = _extract_text(response.content)
 
+    # Validate generated citations.
     validation = validate_citations(
         answer=answer,
         citation_count=len(results),
     )
 
-    # One repair attempt if citations are invalid.
+    # Repair once if citation validation fails.
     if not validation["is_valid"]:
         answer = await repair_answer(
             query=query,
@@ -197,8 +263,7 @@ Evidence:
             citation_count=len(results),
         )
 
-    # Safe fallback if the model still produces
-    # invalid citations after repair.
+    # Safe fallback if repair also fails.
     if not validation["is_valid"]:
         answer = (
             "I found relevant evidence, but I could not "
@@ -232,6 +297,7 @@ Evidence:
             }
             for result in results
         ],
+        "retrieval_query": retrieval_query,
         "evidence_grade": evidence_grade,
         "citation_validation": validation,
     }
